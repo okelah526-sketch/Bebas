@@ -81,22 +81,29 @@
     </div>
   </section>
 
-  <p class="note">Gambar dan prompt dikirim ke OpenAI memakai API key Anda. Key disimpan hanya di browser perangkat ini.</p>
+  <p class="note">Gambar dan prompt dikirim ke penyedia AI yang Anda pilih memakai API key Anda. Key disimpan hanya di browser perangkat ini.</p>
 </main>
 
 <dialog id="dlg">
   <form method="dialog" id="setForm">
     <div>
-      <label class="f" for="key">OpenAI API key</label>
+      <label class="f" for="provider">Penyedia AI</label>
+      <select id="provider">
+        <option value="gemini">Google Gemini</option>
+        <option value="openai">OpenAI</option>
+      </select>
+    </div>
+    <div>
+      <label class="f" for="key" id="keyLabel">API key</label>
       <input type="password" id="key" placeholder="sk-..." autocomplete="off">
-      <p class="hint">Buat di platform.openai.com/api-keys. Langganan ChatGPT tidak bisa dipakai sebagai key; akun API butuh saldo sendiri.</p>
+      <p class="hint" id="keyHint"></p>
     </div>
     <div>
       <label class="f" for="model">Nama model</label>
       <input type="text" id="model" autocomplete="off">
     </div>
     <div>
-      <label class="f" for="size">Ukuran hasil</label>
+      <label class="f" for="size">Ukuran hasil (hanya OpenAI)</label>
       <select id="size">
         <option value="auto">Otomatis</option>
         <option value="1024x1024">Persegi 1024×1024</option>
@@ -146,16 +153,33 @@
 
   // Pengaturan
   var dlg = $("dlg");
+  var P = {
+    gemini: {label:"Gemini API key", model:"gemini-2.5-flash-image",
+             hint:"Buat gratis di aistudio.google.com (Get API key). Model gambar bisa saja tidak termasuk jatah gratis."},
+    openai: {label:"OpenAI API key", model:"gpt-image-1",
+             hint:"Buat di platform.openai.com/api-keys. Langganan ChatGPT tidak bisa dipakai; akun API butuh saldo sendiri."}
+  };
+  function curProvider(){ var p = store("provider"); return P[p] ? p : "gemini"; }
+  function fillProviderFields(p){
+    $("keyLabel").textContent = P[p].label;
+    $("keyHint").textContent = P[p].hint;
+    $("key").value = store("apiKey_" + p) || "";
+    $("model").value = store("model_" + p) || P[p].model;
+  }
   function loadSettings(){
-    $("key").value = store("apiKey") || "";
-    $("model").value = store("model") || DEFAULT_MODEL;
+    var p = curProvider();
+    $("provider").value = p;
+    fillProviderFields(p);
     $("size").value = store("size") || "auto";
   }
+  $("provider").onchange = function(){ fillProviderFields($("provider").value); };
   $("openSet").onclick = function(){ loadSettings(); dlg.showModal(); };
   $("cancelSet").onclick = function(){ dlg.close(); };
   $("setForm").addEventListener("submit", function(){
-    store("apiKey", $("key").value.trim());
-    store("model", $("model").value.trim() || DEFAULT_MODEL);
+    var p = $("provider").value;
+    store("provider", p);
+    store("apiKey_" + p, $("key").value.trim());
+    store("model_" + p, $("model").value.trim() || P[p].model);
     store("size", $("size").value);
   });
 
@@ -194,43 +218,82 @@
     return new Blob([arr], {type:type});
   }
 
-  // Generate
+  function blobToB64(blob){
+    return new Promise(function(resolve, reject){
+      var r = new FileReader();
+      r.onload = function(){ resolve(String(r.result).split(",")[1]); };
+      r.onerror = function(){ reject(new Error("Gagal membaca gambar.")); };
+      r.readAsDataURL(blob);
+    });
+  }
+  function errMsg(data, text){
+    if(data && data.error && data.error.message) return data.error.message;
+    return String(text).slice(0, 300);
+  }
+
+  async function callOpenAI(key, model, prompt, blobs){
+    var fd = new FormData();
+    fd.append("model", model);
+    fd.append("prompt", prompt);
+    fd.append("n", "1");
+    var size = store("size") || "auto";
+    if(size !== "auto") fd.append("size", size);
+    fd.append("image[]", blobs[0], "ref1.jpg");
+    fd.append("image[]", blobs[1], "ref2.jpg");
+    var res = await fetch("https://api.openai.com/v1/images/edits", {
+      method:"POST", headers:{ "Authorization":"Bearer " + key }, body: fd });
+    var text = await res.text(), data = null;
+    try{ data = JSON.parse(text); }catch(e){}
+    if(!res.ok) throw new Error("Error " + res.status + ": " + errMsg(data, text));
+    var item = data && data.data && data.data[0];
+    if(!item) throw new Error("Respons tidak berisi gambar.");
+    if(item.b64_json) return b64ToBlob(item.b64_json, "image/png");
+    if(item.url) return await (await fetch(item.url)).blob();
+    throw new Error("Respons tidak berisi gambar.");
+  }
+
+  async function callGemini(key, model, prompt, blobs){
+    var parts = [{text: prompt}];
+    for(var i=0;i<blobs.length;i++){
+      parts.push({inline_data:{mime_type:"image/jpeg", data: await blobToB64(blobs[i])}});
+    }
+    var res = await fetch("https://generativelanguage.googleapis.com/v1beta/models/" + encodeURIComponent(model) + ":generateContent", {
+      method:"POST",
+      headers:{ "Content-Type":"application/json", "x-goog-api-key": key },
+      body: JSON.stringify({ contents:[{ parts: parts }] })
+    });
+    var text = await res.text(), data = null;
+    try{ data = JSON.parse(text); }catch(e){}
+    if(!res.ok) throw new Error("Error " + res.status + ": " + errMsg(data, text));
+    var cand = data && data.candidates && data.candidates[0];
+    if(!cand){
+      var why = data && data.promptFeedback && data.promptFeedback.blockReason;
+      throw new Error("Permintaan ditolak" + (why ? ": " + why : " tanpa hasil") + ".");
+    }
+    var ps = (cand.content && cand.content.parts) || [], note = "";
+    for(var j=0;j<ps.length;j++){
+      var inl = ps[j].inlineData || ps[j].inline_data;
+      if(inl && inl.data) return b64ToBlob(inl.data, inl.mimeType || inl.mime_type || "image/png");
+      if(ps[j].text) note = ps[j].text;
+    }
+    throw new Error("Model tidak mengembalikan gambar." + (note ? " Balasan: " + note.slice(0,200) : (cand.finishReason ? " Alasan: " + cand.finishReason : "")));
+  }
+
   $("go").onclick = async function(){
-    var key = store("apiKey");
+    var p = curProvider();
+    var key = store("apiKey_" + p);
+    var model = store("model_" + p) || P[p].model;
     var prompt = $("prompt").value.trim();
     if(!files[0] || !files[1]) return setStatus("Pilih kedua gambar referensi dulu.", true);
     if(!prompt) return setStatus("Tulis prompt agar model tahu hasil yang diinginkan.", true);
-    if(!key){ setStatus("Masukkan API key di Pengaturan.", true); loadSettings(); dlg.showModal(); return; }
+    if(!key){ setStatus("Masukkan API key " + (p==="gemini"?"Gemini":"OpenAI") + " di Pengaturan.", true); loadSettings(); dlg.showModal(); return; }
 
     var btn = $("go"); btn.disabled = true; btn.textContent = "Memproses...";
     $("out").style.display = "none";
-    setStatus("Mengirim ke OpenAI. Biasanya 30 detik sampai 2 menit...");
+    setStatus("Mengirim ke " + (p==="gemini"?"Gemini":"OpenAI") + ". Biasanya 10 detik sampai 2 menit...");
     try{
-      var blobs = files;
-      var fd = new FormData();
-      fd.append("model", store("model") || DEFAULT_MODEL);
-      fd.append("prompt", "Use the two attached images as visual references (first = reference 1, second = reference 2). " + prompt);
-      fd.append("n", "1");
-      var size = store("size") || "auto";
-      if(size !== "auto") fd.append("size", size);
-      fd.append("image[]", blobs[0], "ref1.jpg");
-      fd.append("image[]", blobs[1], "ref2.jpg");
-
-      var res = await fetch("https://api.openai.com/v1/images/edits", {
-        method: "POST", headers: { "Authorization": "Bearer " + key }, body: fd
-      });
-      var text = await res.text(), data = null;
-      try{ data = JSON.parse(text); }catch(e){}
-      if(!res.ok){
-        var m = data && data.error && data.error.message ? data.error.message : text.slice(0,300);
-        throw new Error("Error " + res.status + ": " + m);
-      }
-      var item = data && data.data && data.data[0];
-      if(!item) throw new Error("Respons tidak berisi gambar.");
-      if(item.b64_json){ lastBlob = b64ToBlob(item.b64_json, "image/png"); }
-      else if(item.url){ lastBlob = await (await fetch(item.url)).blob(); }
-      else throw new Error("Respons tidak berisi gambar.");
-
+      var full = "Use the two attached images as visual references (first = reference 1, second = reference 2). " + prompt;
+      lastBlob = p === "gemini" ? await callGemini(key, model, full, files) : await callOpenAI(key, model, full, files);
       $("result").src = URL.createObjectURL(lastBlob);
       $("out").style.display = "grid";
       setStatus("Selesai.");
@@ -238,7 +301,7 @@
     }catch(err){
       var msg = err && err.message ? err.message : String(err);
       if(/Failed to fetch|NetworkError|Load failed/i.test(msg))
-        msg = "Tidak bisa terhubung ke OpenAI. Periksa internet Anda. Jika file dibuka dari aplikasi lain, coba buka lewat Chrome.";
+        msg = "Tidak bisa terhubung ke server AI. Periksa internet Anda, atau penyedia ini mungkin memblokir panggilan dari browser.";
       setStatus(msg, true);
     }finally{
       btn.disabled = false; btn.textContent = "Buat gambar";
