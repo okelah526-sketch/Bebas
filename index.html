@@ -124,16 +124,23 @@
   // Pemilih gambar
   [["ref1",0],["ref2",1]].forEach(function(pair){
     var box = $(pair[0]), idx = pair[1];
-    box.querySelector("input").addEventListener("change", function(e){
+    box.querySelector("input").addEventListener("change", async function(e){
       var f = e.target.files[0]; if(!f) return;
-      files[idx] = f;
-      var old = box.querySelector("img"); if(old) old.remove();
-      var img = document.createElement("img");
-      img.alt = "Referensi " + (idx+1);
-      img.src = URL.createObjectURL(f);
-      box.insertBefore(img, box.firstChild);
-      box.classList.add("has");
-      setStatus(files[0] && files[1] ? "Kedua referensi siap. Tulis prompt." : "Referensi " + (idx+1) + " dipilih.");
+      setStatus("Memproses gambar...");
+      try{
+        var blob = await shrink(f, 1536);
+        files[idx] = blob;
+        var old = box.querySelector("img"); if(old) old.remove();
+        var img = document.createElement("img");
+        img.alt = "Referensi " + (idx+1);
+        img.src = URL.createObjectURL(blob);
+        box.insertBefore(img, box.firstChild);
+        box.classList.add("has");
+        setStatus(files[0] && files[1] ? "Kedua referensi siap. Tulis prompt." : "Referensi " + (idx+1) + " dipilih.");
+      }catch(err){
+        files[idx] = null;
+        setStatus((err && err.message) || "Gambar tidak bisa dibaca. Coba pilih foto lain.", true);
+      }
     });
   });
 
@@ -152,22 +159,32 @@
     store("size", $("size").value);
   });
 
-  // Perkecil gambar -> Blob JPEG
-  function shrink(file, maxSide){
-    return new Promise(function(resolve, reject){
-      var url = URL.createObjectURL(file), im = new Image();
-      im.onload = function(){
-        var s = Math.min(1, maxSide / Math.max(im.naturalWidth, im.naturalHeight));
-        var c = document.createElement("canvas");
-        c.width = Math.round(im.naturalWidth * s); c.height = Math.round(im.naturalHeight * s);
-        var ctx = c.getContext("2d");
-        ctx.fillStyle = "#fff"; ctx.fillRect(0,0,c.width,c.height);
-        ctx.drawImage(im, 0, 0, c.width, c.height);
-        URL.revokeObjectURL(url);
-        c.toBlob(function(b){ b ? resolve(b) : reject(new Error("Gagal memproses gambar.")); }, "image/jpeg", 0.92);
-      };
-      im.onerror = function(){ reject(new Error("Format gambar tidak didukung.")); };
+  // Perkecil gambar -> Blob JPEG (dibaca sekali saat dipilih)
+  async function loadBitmap(file){
+    var buf = await file.arrayBuffer();
+    var blob = new Blob([buf], {type: file.type || "image/jpeg"});
+    if(window.createImageBitmap){
+      try{ return await createImageBitmap(blob, {imageOrientation:"from-image"}); }catch(e){}
+      try{ return await createImageBitmap(blob); }catch(e){}
+    }
+    return await new Promise(function(resolve, reject){
+      var url = URL.createObjectURL(blob), im = new Image();
+      im.onload = function(){ resolve(im); };
+      im.onerror = function(){ reject(new Error("Format gambar tidak didukung. Coba pilih foto JPG atau PNG.")); };
       im.src = url;
+    });
+  }
+  async function shrink(file, maxSide){
+    var im = await loadBitmap(file);
+    var w = im.width || im.naturalWidth, h = im.height || im.naturalHeight;
+    var s = Math.min(1, maxSide / Math.max(w, h));
+    var c = document.createElement("canvas");
+    c.width = Math.max(1, Math.round(w * s)); c.height = Math.max(1, Math.round(h * s));
+    var ctx = c.getContext("2d");
+    ctx.fillStyle = "#fff"; ctx.fillRect(0,0,c.width,c.height);
+    ctx.drawImage(im, 0, 0, c.width, c.height);
+    return await new Promise(function(resolve, reject){
+      c.toBlob(function(b){ b ? resolve(b) : reject(new Error("Gagal memproses gambar.")); }, "image/jpeg", 0.92);
     });
   }
 
@@ -189,7 +206,7 @@
     $("out").style.display = "none";
     setStatus("Mengirim ke OpenAI. Biasanya 30 detik sampai 2 menit...");
     try{
-      var blobs = await Promise.all([shrink(files[0], 1536), shrink(files[1], 1536)]);
+      var blobs = files;
       var fd = new FormData();
       fd.append("model", store("model") || DEFAULT_MODEL);
       fd.append("prompt", "Use the two attached images as visual references (first = reference 1, second = reference 2). " + prompt);
