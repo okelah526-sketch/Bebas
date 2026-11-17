@@ -1,0 +1,252 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DualRef</title>
+<style>
+  :root{
+    --bg:#0d0f16; --panel:#171a25; --line:#2c3243; --text:#eef0f6; --muted:#9aa3b5;
+    --accent:#a496ff; --accent-ink:#14102e; --err:#ff8a8a;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;background:var(--bg);color:var(--text);
+    font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;-webkit-text-size-adjust:100%}
+  main{max-width:560px;margin:0 auto;padding:20px 18px 48px;display:grid;gap:20px}
+  header{display:flex;align-items:center;justify-content:space-between}
+  h1{font-size:1.6rem;margin:0;font-weight:800;letter-spacing:-.02em}
+  .sub{color:var(--muted);font-size:.9rem;margin:2px 0 0}
+  button{font:inherit;color:inherit;cursor:pointer}
+  .icon-btn{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:10px 14px}
+  .refs{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+  .ref{position:relative;aspect-ratio:1/1.15;border:1.5px dashed var(--line);border-radius:18px;
+    background:var(--panel);overflow:hidden;display:flex;align-items:center;justify-content:center;
+    text-align:center;color:var(--muted);padding:10px}
+  .ref.has{border-style:solid;border-color:var(--accent)}
+  .ref img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
+  .ref input{position:absolute;inset:0;opacity:0;width:100%;height:100%;cursor:pointer}
+  .ref strong{display:block;color:var(--text);margin-bottom:4px}
+  label.f{display:block;font-weight:700;margin-bottom:8px}
+  textarea,input[type=text],input[type=password],select{
+    width:100%;background:var(--panel);color:var(--text);border:1px solid var(--line);
+    border-radius:14px;padding:12px 14px;font:inherit}
+  textarea{min-height:110px;resize:vertical}
+  textarea:focus,input:focus,select:focus,button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+  .go{width:100%;background:var(--accent);color:var(--accent-ink);border:0;border-radius:16px;
+    padding:16px;font-weight:800;font-size:1.05rem}
+  .go[disabled]{opacity:.55;cursor:wait}
+  .status{background:var(--panel);border-radius:14px;padding:12px 14px;color:#d5d9e4;font-size:.92rem;line-height:1.4}
+  .status.err{color:var(--err)}
+  #out{display:none;gap:12px}
+  #out img{width:100%;border-radius:18px;display:block}
+  .row{display:flex;gap:12px}
+  .row button{flex:1;background:transparent;border:1px solid var(--line);border-radius:14px;padding:12px;font-weight:600}
+  dialog{background:var(--panel);color:var(--text);border:1px solid var(--line);border-radius:20px;
+    padding:20px;width:min(92vw,440px)}
+  dialog::backdrop{background:rgba(0,0,0,.6)}
+  dialog form{display:grid;gap:14px}
+  .hint{color:var(--muted);font-size:.8rem;margin:0}
+  .note{color:var(--muted);font-size:.78rem}
+  @media (prefers-reduced-motion:no-preference){ .go{transition:transform .08s} .go:active{transform:scale(.98)} }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <div>
+      <h1>DualRef</h1>
+      <p class="sub">Dua gambar referensi, satu hasil baru.</p>
+    </div>
+    <button class="icon-btn" id="openSet" type="button">Pengaturan</button>
+  </header>
+
+  <section class="refs">
+    <div class="ref" id="ref1"><div><strong>Referensi 1</strong>Ketuk untuk pilih gambar</div><input type="file" accept="image/*" aria-label="Pilih referensi 1"></div>
+    <div class="ref" id="ref2"><div><strong>Referensi 2</strong>Ketuk untuk pilih gambar</div><input type="file" accept="image/*" aria-label="Pilih referensi 2"></div>
+  </section>
+
+  <section>
+    <label class="f" for="prompt">Prompt</label>
+    <textarea id="prompt" placeholder="Contoh: Gabungkan suasana dan warna dari kedua referensi menjadi satu gambar sinematik."></textarea>
+  </section>
+
+  <button class="go" id="go" type="button">Buat gambar</button>
+  <div class="status" id="status" role="status">Pilih dua gambar dan tulis prompt.</div>
+
+  <section id="out">
+    <img id="result" alt="Hasil gambar">
+    <div class="row">
+      <button id="save" type="button">Simpan</button>
+      <button id="share" type="button">Bagikan</button>
+    </div>
+  </section>
+
+  <p class="note">Gambar dan prompt dikirim ke OpenAI memakai API key Anda. Key disimpan hanya di browser perangkat ini.</p>
+</main>
+
+<dialog id="dlg">
+  <form method="dialog" id="setForm">
+    <div>
+      <label class="f" for="key">OpenAI API key</label>
+      <input type="password" id="key" placeholder="sk-..." autocomplete="off">
+      <p class="hint">Buat di platform.openai.com/api-keys. Langganan ChatGPT tidak bisa dipakai sebagai key; akun API butuh saldo sendiri.</p>
+    </div>
+    <div>
+      <label class="f" for="model">Nama model</label>
+      <input type="text" id="model" autocomplete="off">
+    </div>
+    <div>
+      <label class="f" for="size">Ukuran hasil</label>
+      <select id="size">
+        <option value="auto">Otomatis</option>
+        <option value="1024x1024">Persegi 1024×1024</option>
+        <option value="1024x1536">Potret 1024×1536</option>
+        <option value="1536x1024">Lanskap 1536×1024</option>
+      </select>
+    </div>
+    <div class="row">
+      <button type="button" id="cancelSet">Batal</button>
+      <button type="submit" id="saveSet" style="background:var(--accent);color:var(--accent-ink);border-color:var(--accent)">Simpan</button>
+    </div>
+  </form>
+</dialog>
+
+<script>
+(function(){
+  var DEFAULT_MODEL = "gpt-image-1";
+  var files = [null, null];
+  var lastBlob = null;
+  var $ = function(id){ return document.getElementById(id); };
+
+  function store(k, v){ try{ if(v===undefined) return localStorage.getItem(k); localStorage.setItem(k, v); }catch(e){ return null; } }
+  function setStatus(msg, isErr){ var s=$("status"); s.textContent=msg; s.className="status"+(isErr?" err":""); }
+
+  // Pemilih gambar
+  [["ref1",0],["ref2",1]].forEach(function(pair){
+    var box = $(pair[0]), idx = pair[1];
+    box.querySelector("input").addEventListener("change", function(e){
+      var f = e.target.files[0]; if(!f) return;
+      files[idx] = f;
+      var old = box.querySelector("img"); if(old) old.remove();
+      var img = document.createElement("img");
+      img.alt = "Referensi " + (idx+1);
+      img.src = URL.createObjectURL(f);
+      box.insertBefore(img, box.firstChild);
+      box.classList.add("has");
+      setStatus(files[0] && files[1] ? "Kedua referensi siap. Tulis prompt." : "Referensi " + (idx+1) + " dipilih.");
+    });
+  });
+
+  // Pengaturan
+  var dlg = $("dlg");
+  function loadSettings(){
+    $("key").value = store("apiKey") || "";
+    $("model").value = store("model") || DEFAULT_MODEL;
+    $("size").value = store("size") || "auto";
+  }
+  $("openSet").onclick = function(){ loadSettings(); dlg.showModal(); };
+  $("cancelSet").onclick = function(){ dlg.close(); };
+  $("setForm").addEventListener("submit", function(){
+    store("apiKey", $("key").value.trim());
+    store("model", $("model").value.trim() || DEFAULT_MODEL);
+    store("size", $("size").value);
+  });
+
+  // Perkecil gambar -> Blob JPEG
+  function shrink(file, maxSide){
+    return new Promise(function(resolve, reject){
+      var url = URL.createObjectURL(file), im = new Image();
+      im.onload = function(){
+        var s = Math.min(1, maxSide / Math.max(im.naturalWidth, im.naturalHeight));
+        var c = document.createElement("canvas");
+        c.width = Math.round(im.naturalWidth * s); c.height = Math.round(im.naturalHeight * s);
+        var ctx = c.getContext("2d");
+        ctx.fillStyle = "#fff"; ctx.fillRect(0,0,c.width,c.height);
+        ctx.drawImage(im, 0, 0, c.width, c.height);
+        URL.revokeObjectURL(url);
+        c.toBlob(function(b){ b ? resolve(b) : reject(new Error("Gagal memproses gambar.")); }, "image/jpeg", 0.92);
+      };
+      im.onerror = function(){ reject(new Error("Format gambar tidak didukung.")); };
+      im.src = url;
+    });
+  }
+
+  function b64ToBlob(b64, type){
+    var bin = atob(b64), arr = new Uint8Array(bin.length);
+    for(var i=0;i<bin.length;i++) arr[i] = bin.charCodeAt(i);
+    return new Blob([arr], {type:type});
+  }
+
+  // Generate
+  $("go").onclick = async function(){
+    var key = store("apiKey");
+    var prompt = $("prompt").value.trim();
+    if(!files[0] || !files[1]) return setStatus("Pilih kedua gambar referensi dulu.", true);
+    if(!prompt) return setStatus("Tulis prompt agar model tahu hasil yang diinginkan.", true);
+    if(!key){ setStatus("Masukkan API key di Pengaturan.", true); loadSettings(); dlg.showModal(); return; }
+
+    var btn = $("go"); btn.disabled = true; btn.textContent = "Memproses...";
+    $("out").style.display = "none";
+    setStatus("Mengirim ke OpenAI. Biasanya 30 detik sampai 2 menit...");
+    try{
+      var blobs = await Promise.all([shrink(files[0], 1536), shrink(files[1], 1536)]);
+      var fd = new FormData();
+      fd.append("model", store("model") || DEFAULT_MODEL);
+      fd.append("prompt", "Use the two attached images as visual references (first = reference 1, second = reference 2). " + prompt);
+      fd.append("n", "1");
+      var size = store("size") || "auto";
+      if(size !== "auto") fd.append("size", size);
+      fd.append("image[]", blobs[0], "ref1.jpg");
+      fd.append("image[]", blobs[1], "ref2.jpg");
+
+      var res = await fetch("https://api.openai.com/v1/images/edits", {
+        method: "POST", headers: { "Authorization": "Bearer " + key }, body: fd
+      });
+      var text = await res.text(), data = null;
+      try{ data = JSON.parse(text); }catch(e){}
+      if(!res.ok){
+        var m = data && data.error && data.error.message ? data.error.message : text.slice(0,300);
+        throw new Error("Error " + res.status + ": " + m);
+      }
+      var item = data && data.data && data.data[0];
+      if(!item) throw new Error("Respons tidak berisi gambar.");
+      if(item.b64_json){ lastBlob = b64ToBlob(item.b64_json, "image/png"); }
+      else if(item.url){ lastBlob = await (await fetch(item.url)).blob(); }
+      else throw new Error("Respons tidak berisi gambar.");
+
+      $("result").src = URL.createObjectURL(lastBlob);
+      $("out").style.display = "grid";
+      setStatus("Selesai.");
+      $("out").scrollIntoView({behavior:"smooth", block:"start"});
+    }catch(err){
+      var msg = err && err.message ? err.message : String(err);
+      if(/Failed to fetch|NetworkError|Load failed/i.test(msg))
+        msg = "Tidak bisa terhubung ke OpenAI. Periksa internet Anda. Jika file dibuka dari aplikasi lain, coba buka lewat Chrome.";
+      setStatus(msg, true);
+    }finally{
+      btn.disabled = false; btn.textContent = "Buat gambar";
+    }
+  };
+
+  // Simpan & bagikan
+  $("save").onclick = function(){
+    if(!lastBlob) return;
+    var a = document.createElement("a");
+    a.href = URL.createObjectURL(lastBlob);
+    a.download = "dualref_" + Date.now() + ".png";
+    document.body.appendChild(a); a.click(); a.remove();
+    setStatus("Gambar diunduh ke folder Download.");
+  };
+  $("share").onclick = async function(){
+    if(!lastBlob) return;
+    var f = new File([lastBlob], "dualref.png", {type:"image/png"});
+    if(navigator.canShare && navigator.canShare({files:[f]})){
+      try{ await navigator.share({files:[f]}); }catch(e){}
+    }else{
+      setStatus("Perangkat tidak mendukung bagikan langsung. Gunakan tombol Simpan.", true);
+    }
+  };
+})();
+</script>
+</body>
+</html>
